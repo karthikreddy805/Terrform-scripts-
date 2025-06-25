@@ -1,0 +1,11 @@
+project_name            = "my-ecs-app"
+region                  = "us-east-1"
+ecs_cluster_name        = "my-ecs-cluster"
+container_name          = "my-container"
+container_image         = "nginx:latest"
+task_execution_role_name = "ecsTaskExecutionRole"
+task_role_name          = "ecsTaskRole"
+cpu                     = 256
+memory                  = 512
+subnets                 = ["subnet-xxxxxx", "subnet-yyyyyy"]
+security_groups         = ["sg-xxxxxx"]
