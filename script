@@ -1,0 +1,54 @@
+#!/bin/bash
+
+# Settings
+REGION="us-east-1"
+DAYS_OLD=30
+CPU_THRESHOLD=10
+
+# Get date 30 days ago
+CUTOFF_DATE=$(date -d "-$DAYS_OLD days" +%Y-%m-%dT%H:%M:%S)
+
+echo "Looking for EC2 instances older than $DAYS_OLD days..."
+
+# Get EC2 instance IDs and Launch Times
+aws ec2 describe-instances \
+  --region "$REGION" \
+  --query "Reservations[*].Instances[*].[InstanceId,LaunchTime,State.Name]" \
+  --output text | while read ID LAUNCH STATE; do
+
+  # Skip if not running
+  [ "$STATE" != "running" ] && continue
+
+  # Check if launched before cutoff
+  LAUNCH_EPOCH=$(date -d "$LAUNCH" +%s)
+  CUTOFF_EPOCH=$(date -d "$CUTOFF_DATE" +%s)
+
+  if [ "$LAUNCH_EPOCH" -lt "$CUTOFF_EPOCH" ]; then
+    echo "➡️  $ID is old (Launched: $LAUNCH)"
+
+    # Check CPU usage from last 7 days
+    CPU=$(aws cloudwatch get-metric-statistics \
+      --region "$REGION" \
+      --metric-name CPUUtilization \
+      --start-time $(date -d "-7 days" --iso-8601=seconds) \
+      --end-time $(date --iso-8601=seconds) \
+      --period 604800 \
+      --namespace AWS/EC2 \
+      --statistics Average \
+      --dimensions Name=InstanceId,Value=$ID \
+      --query "Datapoints[0].Average" \
+      --output text)
+
+    [ "$CPU" == "None" ] && CPU=0
+
+    echo "   🔸 CPU usage: $CPU%"
+
+    # Delete if CPU usage is low
+    if (( $(echo "$CPU < $CPU_THRESHOLD" | bc -l) )); then
+      echo "   ⚠️  Deleting $ID..."
+      aws ec2 terminate-instances --instance-ids "$ID" --region "$REGION"
+    else
+      echo "   ✅ CPU is fine. Not deleting."
+    fi
+  fi
+done
