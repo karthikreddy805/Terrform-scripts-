@@ -1,0 +1,56 @@
+#!/bin/bash
+
+# === CONFIG ===
+REGION="us-east-1"              # AWS region
+DAYS_OLD=30                     # Threshold in days
+CPU_THRESHOLD=10                # % average CPU to consider as low usage
+NOW=$(date +%s)                 # Current timestamp
+LOGFILE="old_rds_report.txt"
+
+echo "🔍 Checking for RDS instances older than $DAYS_OLD days with CPU < $CPU_THRESHOLD%" > $LOGFILE
+echo "Report generated at: $(date)" >> $LOGFILE
+echo "--------------------------------------------" >> $LOGFILE
+
+# === Get all RDS instances ===
+aws rds describe-db-instances --region "$REGION" | jq -c '.DBInstances[]' | while read rds; do
+  # Extract instance details
+  DB_INSTANCE_ID=$(echo "$rds" | jq -r '.DBInstanceIdentifier')
+  ENGINE=$(echo "$rds" | jq -r '.Engine')
+  CREATED_TIME=$(echo "$rds" | jq -r '.InstanceCreateTime')
+  CREATED_EPOCH=$(date -d "$CREATED_TIME" +%s)
+  AGE_DAYS=$(( (NOW - CREATED_EPOCH) / 86400 ))
+
+  if [ "$AGE_DAYS" -ge "$DAYS_OLD" ]; then
+    echo "➡️  $DB_INSTANCE_ID is $AGE_DAYS days old (Engine: $ENGINE)"
+
+    # Get average CPU usage from CloudWatch for last 7 days
+    CPU_UTIL=$(aws cloudwatch get-metric-statistics \
+      --namespace AWS/RDS \
+      --metric-name CPUUtilization \
+      --dimensions Name=DBInstanceIdentifier,Value=$DB_INSTANCE_ID \
+      --statistics Average \
+      --period 604800 \
+      --start-time $(date -d "-7 days" --iso-8601=seconds) \
+      --end-time $(date --iso-8601=seconds) \
+      --region "$REGION" \
+      --output json | jq -r '.Datapoints[0].Average')
+
+    # Default CPU to 0 if no data
+    if [ "$CPU_UTIL" == "null" ] || [ -z "$CPU_UTIL" ]; then
+      CPU_UTIL=0
+    fi
+
+    echo "    🔹 Avg CPU Usage (last 7 days): $CPU_UTIL%" >> $LOGFILE
+
+    # Compare CPU usage
+    if (( $(echo "$CPU_UTIL < $CPU_THRESHOLD" | bc -l) )); then
+      echo "    ⚠️  Instance $DB_INSTANCE_ID is underutilized and old." >> $LOGFILE
+    else
+      echo "    ✅ Instance $DB_INSTANCE_ID is active and in use." >> $LOGFILE
+    fi
+
+    echo "--------------------------------------------" >> $LOGFILE
+  fi
+done
+
+echo "✅ Report saved to $LOGFILE"
