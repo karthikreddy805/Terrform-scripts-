@@ -1,56 +1,44 @@
 #!/bin/bash
 
-# === CONFIG ===
-REGION="us-east-1"              # AWS region
-DAYS_OLD=30                     # Threshold in days
-CPU_THRESHOLD=10                # % average CPU to consider as low usage
-NOW=$(date +%s)                 # Current timestamp
-LOGFILE="old_rds_report.txt"
+REGION="us-east-1"
+DAYS_OLD=30
+CPU_THRESHOLD=10
+NOW=$(date +%s)
 
-echo "🔍 Checking for RDS instances older than $DAYS_OLD days with CPU < $CPU_THRESHOLD%" > $LOGFILE
-echo "Report generated at: $(date)" >> $LOGFILE
-echo "--------------------------------------------" >> $LOGFILE
+echo "Checking for old and underutilized RDS instances..."
+echo "------------------------------------------"
 
-# === Get all RDS instances ===
-aws rds describe-db-instances --region "$REGION" | jq -c '.DBInstances[]' | while read rds; do
-  # Extract instance details
-  DB_INSTANCE_ID=$(echo "$rds" | jq -r '.DBInstanceIdentifier')
-  ENGINE=$(echo "$rds" | jq -r '.Engine')
-  CREATED_TIME=$(echo "$rds" | jq -r '.InstanceCreateTime')
-  CREATED_EPOCH=$(date -d "$CREATED_TIME" +%s)
-  AGE_DAYS=$(( (NOW - CREATED_EPOCH) / 86400 ))
+# Get list of RDS instances
+aws rds describe-db-instances --region "$REGION" --query "DBInstances[*].[DBInstanceIdentifier,InstanceCreateTime]" --output text | while read ID CREATE_TIME; do
+  CREATE_EPOCH=$(date -d "$CREATE_TIME" +%s)
+  AGE_DAYS=$(( (NOW - CREATE_EPOCH) / 86400 ))
 
-  if [ "$AGE_DAYS" -ge "$DAYS_OLD" ]; then
-    echo "➡️  $DB_INSTANCE_ID is $AGE_DAYS days old (Engine: $ENGINE)"
+  if [ "$AGE_DAYS" -gt "$DAYS_OLD" ]; then
+    echo "Instance: $ID (Age: $AGE_DAYS days)"
 
-    # Get average CPU usage from CloudWatch for last 7 days
-    CPU_UTIL=$(aws cloudwatch get-metric-statistics \
-      --namespace AWS/RDS \
+    # Get average CPU usage for the last 7 days
+    CPU=$(aws cloudwatch get-metric-statistics \
+      --region "$REGION" \
       --metric-name CPUUtilization \
-      --dimensions Name=DBInstanceIdentifier,Value=$DB_INSTANCE_ID \
+      --namespace AWS/RDS \
       --statistics Average \
+      --dimensions Name=DBInstanceIdentifier,Value=$ID \
       --period 604800 \
       --start-time $(date -d "-7 days" --iso-8601=seconds) \
       --end-time $(date --iso-8601=seconds) \
-      --region "$REGION" \
-      --output json | jq -r '.Datapoints[0].Average')
+      --query "Datapoints[0].Average" \
+      --output text)
 
-    # Default CPU to 0 if no data
-    if [ "$CPU_UTIL" == "null" ] || [ -z "$CPU_UTIL" ]; then
-      CPU_UTIL=0
-    fi
+    [ "$CPU" == "None" ] && CPU=0
 
-    echo "    🔹 Avg CPU Usage (last 7 days): $CPU_UTIL%" >> $LOGFILE
+    echo "   CPU Usage (7-day avg): $CPU%"
 
-    # Compare CPU usage
-    if (( $(echo "$CPU_UTIL < $CPU_THRESHOLD" | bc -l) )); then
-      echo "    ⚠️  Instance $DB_INSTANCE_ID is underutilized and old." >> $LOGFILE
+    if (( $(echo "$CPU < $CPU_THRESHOLD" | bc -l) )); then
+      echo "   ⚠️  This RDS instance is old and underutilized."
     else
-      echo "    ✅ Instance $DB_INSTANCE_ID is active and in use." >> $LOGFILE
+      echo "   ✅ This RDS instance is in use."
     fi
 
-    echo "--------------------------------------------" >> $LOGFILE
+    echo "------------------------------------------"
   fi
 done
-
-echo "✅ Report saved to $LOGFILE"
