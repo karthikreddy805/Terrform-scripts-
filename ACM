@@ -1,0 +1,62 @@
+#!/bin/bash
+
+# ----------------------------------------
+# Configuration
+# ----------------------------------------
+REGION="us-east-1"  # Change to your AWS region
+THRESHOLD_REMIND=80  # Days before expiry to remind
+THRESHOLD_RENEW=7    # Days before expiry to auto-renew
+DATE=$(date +%F)
+LOG_FILE="acm_cert_check_$DATE.log"
+EMAIL="your-email@example.com"  # Optional: set to receive notifications
+
+# ----------------------------------------
+# Step 1: List ACM Certificates
+# ----------------------------------------
+echo "Listing ACM certificates in region: $REGION..."
+CERT_ARN_LIST=$(aws acm list-certificates \
+    --region "$REGION" \
+    --query "CertificateSummaryList[*].CertificateArn" \
+    --output text)
+
+echo "Checking certificate expiration status..." > "$LOG_FILE"
+
+# ----------------------------------------
+# Step 2: Check Expiration and Act
+# ----------------------------------------
+for CERT_ARN in $CERT_ARN_LIST; do
+    CERT_DETAILS=$(aws acm describe-certificate \
+        --certificate-arn "$CERT_ARN" \
+        --region "$REGION" \
+        --query "Certificate.{DomainName:DomainName,NotAfter:NotAfter,Type:Type,RenewalEligibility:RenewalEligibility}" \
+        --output json)
+
+    DOMAIN=$(echo "$CERT_DETAILS" | jq -r '.DomainName')
+    EXPIRY_DATE=$(echo "$CERT_DETAILS" | jq -r '.NotAfter')
+    TYPE=$(echo "$CERT_DETAILS" | jq -r '.Type')
+    ELIGIBLE=$(echo "$CERT_DETAILS" | jq -r '.RenewalEligibility')
+
+    EXPIRY_EPOCH=$(date -d "$EXPIRY_DATE" +%s)
+    CURRENT_EPOCH=$(date +%s)
+    DAYS_LEFT=$(( (EXPIRY_EPOCH - CURRENT_EPOCH) / 86400 ))
+
+    echo "Domain: $DOMAIN | Expires in: $DAYS_LEFT days | Type: $TYPE | Eligible: $ELIGIBLE" >> "$LOG_FILE"
+
+    # Reminder if within threshold
+    if [[ "$DAYS_LEFT" -le "$THRESHOLD_REMIND" ]]; then
+        echo "⚠️ Reminder: Certificate for $DOMAIN expires in $DAYS_LEFT days on $EXPIRY_DATE" >> "$LOG_FILE"
+        # Optional: send email
+        if [[ -n "$EMAIL" ]]; then
+            echo "Certificate for $DOMAIN expires in $DAYS_LEFT days on $EXPIRY_DATE" | mail -s "ACM Certificate Expiry Reminder" "$EMAIL"
+        fi
+    fi
+
+    # Auto-renew if eligible and within 7 days
+    if [[ "$DAYS_LEFT" -le "$THRESHOLD_RENEW" && "$ELIGIBLE" == "ELIGIBLE" ]]; then
+        echo "🔄 Attempting auto-renewal for $DOMAIN..." >> "$LOG_FILE"
+        aws acm renew-certificate --certificate-arn "$CERT_ARN" --region "$REGION"
+        echo "✅ Renewal triggered for $DOMAIN" >> "$LOG_FILE"
+    fi
+done
+
+echo "Scan complete. Details logged in: $LOG_FILE"
