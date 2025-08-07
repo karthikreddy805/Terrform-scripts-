@@ -1,0 +1,97 @@
+#!/bin/bash
+
+# ----------------------------------------
+# Configuration
+# ----------------------------------------
+REGION="us-east-1"  # Change to your AWS region
+OWNER_ID="123456789012"  # Replace with your AWS account ID
+DATE=$(date +%F)
+AMI_LOG="unused_amis_$DATE.log"
+SNAPSHOT_LOG="associated_snapshots_$DATE.log"
+
+# ----------------------------------------
+# Step 1: Identify AMIs owned by you
+# ----------------------------------------
+echo "Fetching AMIs owned by account: $OWNER_ID in region: $REGION..."
+AMIS=$(aws ec2 describe-images \
+    --owners "$OWNER_ID" \
+    --region "$REGION" \
+    --query "Images[*].{ID:ImageId,Name:Name,CreationDate:CreationDate}" \
+    --output json)
+
+# ----------------------------------------
+# Step 2: Filter AMIs older than 90 days
+# ----------------------------------------
+echo "Scanning for AMIs older than 90 days..."
+echo "Outdated AMIs (older than 90 days):" > "$AMI_LOG"
+
+echo "$AMIS" | jq -c '.[]' | while read -r ami; do
+    IMAGE_ID=$(echo "$ami" | jq -r '.ID')
+    CREATION_DATE=$(echo "$ami" | jq -r '.CreationDate')
+    CREATION_EPOCH=$(date -d "$CREATION_DATE" +%s)
+    CURRENT_EPOCH=$(date +%s)
+    AGE=$(( (CURRENT_EPOCH - CREATION_EPOCH) / 86400 ))
+
+    if [[ "$AGE" -gt 90 ]]; then
+        echo "Found outdated AMI: $IMAGE_ID (Age: $AGE days)"
+        echo "$IMAGE_ID" >> "$AMI_LOG"
+    fi
+done
+
+echo "Outdated AMIs logged in: $AMI_LOG"
+
+# ----------------------------------------
+# Step 3: Find associated snapshots
+# ----------------------------------------
+echo "Identifying snapshots associated with outdated AMIs..."
+echo "Associated snapshots:" > "$SNAPSHOT_LOG"
+
+while read -r IMAGE_ID; do
+    if [[ "$IMAGE_ID" == "Outdated AMIs"* ]]; then continue; fi
+
+    SNAPSHOTS=$(aws ec2 describe-images \
+        --image-ids "$IMAGE_ID" \
+        --region "$REGION" \
+        --query "Images[*].BlockDeviceMappings[*].Ebs.SnapshotId" \
+        --output text)
+
+    for SNAPSHOT_ID in $SNAPSHOTS; do
+        echo "Found snapshot: $SNAPSHOT_ID for AMI: $IMAGE_ID"
+        echo "$SNAPSHOT_ID" >> "$SNAPSHOT_LOG"
+    done
+done < "$AMI_LOG"
+
+echo "Associated snapshots logged in: $SNAPSHOT_LOG"
+
+# ----------------------------------------
+# Step 4: Prompt for Deregistration and Deletion
+# ----------------------------------------
+echo ""
+echo "Do you want to deregister outdated AMIs? (yes/no)"
+read CONFIRM_AMI
+
+if [[ "$CONFIRM_AMI" == "yes" ]]; then
+    while read -r IMAGE_ID; do
+        if [[ "$IMAGE_ID" == "Outdated AMIs"* ]]; then continue; fi
+        echo "Deregistering AMI: $IMAGE_ID"
+        aws ec2 deregister-image --image-id "$IMAGE_ID" --region "$REGION"
+    done < "$AMI_LOG"
+    echo "AMI deregistration complete."
+else
+    echo "Skipped AMI deregistration."
+fi
+
+echo ""
+echo "Do you want to delete associated snapshots? (yes/no)"
+read CONFIRM_SNAP
+
+if [[ "$CONFIRM_SNAP" == "yes" ]]; then
+    while read -r SNAPSHOT_ID; do
+        if [[ "$SNAPSHOT_ID" == "Associated snapshots"* ]]; then continue; fi
+        echo "Deleting snapshot: $SNAPSHOT_ID"
+        aws ec2 delete-snapshot --snapshot-id "$SNAPSHOT_ID" --region "$REGION"
+    done < "$SNAPSHOT_LOG"
+    echo "Snapshot deletion complete."
+else
+    echo "Skipped snapshot deletion."
+fi
