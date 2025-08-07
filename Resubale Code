@@ -1,0 +1,23 @@
+terraform_project/
+├── main.tf              # Orchestrates modules  (Calls all modules: VPC, EKS, ALB, EC2)
+├── variables.tf         # Global variables  (Defines AWS region)
+├── provider.tf          # AWS provider setup  (AWS provider block)
+├── outputs.tf           # Global outputs     ( Outputs VPC ID)
+├── deploy.sh            # Deployment script
+└── modules/
+    ├── vpc/             # VPC setup
+    │   ├── main.tf        (Creates a VPC and two public subnets)
+    │   ├── variables.tf
+    │   └── outputs.tf      (Outputs VPC ID and subnet IDs)
+    ├── eks/             # EKS cluster
+    │   ├── main.tf       (Creates an EKS cluster)
+    │   ├── variables.tf   (VPC ID and subnet IDs)
+    │   └── outputs.tf
+    ├── alb/             # Application Load Balancer
+    │   ├── main.tf       (Creates an Application Load Balancer)
+    │   ├── variables.tf   (Accepts VPC ID and subnet IDs)
+    │   └── outputs.tf     (Outputs ALB DNS name)
+    └── ec2/             # EC2 instances
+        ├── main.tf        (Launches a t2.micro EC2 instance)
+        ├── variables.tf    (Accepts VPC ID and subnet ID)
+        └── outputs.tf     (Outputs EC2 instance ID)
