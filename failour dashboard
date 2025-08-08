@@ -1,0 +1,69 @@
+#!/bin/bash
+
+# ----------------------------------------
+# Configuration
+# ----------------------------------------
+CI_LOG_PATH="/var/log/ci_jobs.log"
+PROMETHEUS_PUSHGATEWAY="http://localhost:9091/metrics/job/ci_monitor"
+LOKI_ENDPOINT="http://localhost:3100/loki/api/v1/push"
+EMAIL="your-email@example.com"  # Set your email here
+DATE=$(date +%F)
+TIME=$(date +%T)
+LOG_FILE="/tmp/ci_monitor_$DATE.log"
+
+# ----------------------------------------
+# Step 1: Detect CI/CD Failures
+# ----------------------------------------
+echo "[$DATE $TIME] Scanning CI/CD logs for failures..." > "$LOG_FILE"
+FAILURES=$(grep -iE "error|failed|exception" "$CI_LOG_PATH")
+
+if [[ -n "$FAILURES" ]]; then
+    echo "❌ CI/CD job failures detected!" >> "$LOG_FILE"
+    echo "$FAILURES" >> "$LOG_FILE"
+
+    # ----------------------------------------
+    # Step 2: Push Metric to Prometheus
+    # ----------------------------------------
+    echo "Pushing failure metric to Prometheus Pushgateway..."
+    curl -s -X POST "$PROMETHEUS_PUSHGATEWAY" --data-binary @- <<EOF
+ci_job_failure{job="ci_monitor"} 1
+EOF
+
+    # ----------------------------------------
+    # Step 3: Push Logs to Grafana Loki
+    # ----------------------------------------
+    echo "Sending logs to Grafana Loki..."
+    JSON_PAYLOAD=$(jq -n \
+        --arg msg "$FAILURES" \
+        --arg time "$(date --utc +%s%N)" \
+        '{
+            streams: [
+                {
+                    stream: {
+                        job: "ci_monitor",
+                        level: "error"
+                    },
+                    values: [
+                        [$time, $msg]
+                    ]
+                }
+            ]
+        }')
+
+    curl -s -X POST -H "Content-Type: application/json" -d "$JSON_PAYLOAD" "$LOKI_ENDPOINT"
+
+    # ----------------------------------------
+    # Step 4: Send Email Alert
+    # ----------------------------------------
+    echo "Sending alert email to $EMAIL..."
+    echo "$FAILURES" | mail -s "CI/CD Job Failure Alert - $DATE $TIME" "$EMAIL"
+else
+    echo "✅ No CI/CD job failures detected." >> "$LOG_FILE"
+
+    # Push success metric
+    curl -s -X POST "$PROMETHEUS_PUSHGATEWAY" --data-binary @- <<EOF
+ci_job_failure{job="ci_monitor"} 0
+EOF
+fi
+
+echo "Monitoring complete. Log saved to $LOG_FILE"
