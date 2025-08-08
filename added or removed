@@ -1,0 +1,58 @@
+#!/bin/bash
+
+# ================================
+# Configuration
+# ================================
+JOB_SOURCE="crontab -l"              # Command to list jobs (change if using another scheduler)
+SNAPSHOT_DIR="/var/opt/job_tracker"
+CURRENT_FILE="$SNAPSHOT_DIR/current_jobs.txt"
+PREVIOUS_FILE="$SNAPSHOT_DIR/previous_jobs.txt"
+LOG_FILE="$SNAPSHOT_DIR/job_changes.log"
+DATE=$(date '+%Y-%m-%d %H:%M:%S')
+
+# ================================
+# Ensure directory exists
+# ================================
+mkdir -p "$SNAPSHOT_DIR"
+
+# ================================
+# Get current jobs list
+# ================================
+if ! $JOB_SOURCE > "$CURRENT_FILE" 2>/dev/null; then
+    echo "[$DATE] ERROR: Failed to fetch jobs. Check permissions or JOB_SOURCE command." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
+# ================================
+# Compare with previous snapshot
+# ================================
+if [ -f "$PREVIOUS_FILE" ]; then
+    ADDED=$(comm -13 "$PREVIOUS_FILE" "$CURRENT_FILE")
+    REMOVED=$(comm -23 "$PREVIOUS_FILE" "$CURRENT_FILE")
+
+    if [ -n "$ADDED" ] || [ -n "$REMOVED" ]; then
+        echo "===============================" >> "$LOG_FILE"
+        echo "[$DATE] Job changes detected:" >> "$LOG_FILE"
+
+        if [ -n "$ADDED" ]; then
+            echo "Added jobs:" >> "$LOG_FILE"
+            echo "$ADDED" >> "$LOG_FILE"
+        fi
+
+        if [ -n "$REMOVED" ]; then
+            echo "Removed jobs:" >> "$LOG_FILE"
+            echo "$REMOVED" >> "$LOG_FILE"
+        fi
+
+        echo "" >> "$LOG_FILE"
+    else
+        echo "[$DATE] No job changes detected." >> "$LOG_FILE"
+    fi
+else
+    echo "[$DATE] No previous snapshot found. Creating baseline." >> "$LOG_FILE"
+fi
+
+# ================================
+# Update snapshot for next run
+# ================================
+cp "$CURRENT_FILE" "$PREVIOUS_FILE"
