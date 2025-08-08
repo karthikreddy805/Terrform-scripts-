@@ -1,0 +1,57 @@
+#!/bin/bash
+
+# ----------------------------------------
+# Configuration
+# ----------------------------------------
+REGION="us-east-1"  # Change to your AWS region
+DATE=$(date +%F)
+LOG_FILE="secrets_check_$DATE.log"
+ROTATION_THRESHOLD_DAYS=90  # Days since last rotation to trigger alert
+EMAIL="your-email@example.com"  # Optional: set to receive notifications
+
+# ----------------------------------------
+# Step 1: List Secrets
+# ----------------------------------------
+echo "Listing secrets in region: $REGION..."
+SECRET_ARN_LIST=$(aws secretsmanager list-secrets \
+    --region "$REGION" \
+    --query "SecretList[*].ARN" \
+    --output text)
+
+echo "Checking secret rotation status..." > "$LOG_FILE"
+
+# ----------------------------------------
+# Step 2: Check Rotation and Expiry
+# ----------------------------------------
+for SECRET_ARN in $SECRET_ARN_LIST; do
+    SECRET_DETAILS=$(aws secretsmanager describe-secret \
+        --secret-id "$SECRET_ARN" \
+        --region "$REGION" \
+        --query "{Name:Name,RotationEnabled:RotationEnabled,LastChangedDate:LastChangedDate}" \
+        --output json)
+
+    NAME=$(echo "$SECRET_DETAILS" | jq -r '.Name')
+    ROTATION_ENABLED=$(echo "$SECRET_DETAILS" | jq -r '.RotationEnabled')
+    LAST_CHANGED=$(echo "$SECRET_DETAILS" | jq -r '.LastChangedDate')
+
+    if [[ "$LAST_CHANGED" != "null" ]]; then
+        LAST_CHANGED_EPOCH=$(date -d "$LAST_CHANGED" +%s)
+        CURRENT_EPOCH=$(date +%s)
+        DAYS_SINCE_ROTATION=$(( (CURRENT_EPOCH - LAST_CHANGED_EPOCH) / 86400 ))
+    else
+        DAYS_SINCE_ROTATION="N/A"
+    fi
+
+    echo "Secret: $NAME | Rotation Enabled: $ROTATION_ENABLED | Last Changed: $LAST_CHANGED | Days Since Rotation: $DAYS_SINCE_ROTATION" >> "$LOG_FILE"
+
+    # Alert if rotation is enabled but overdue
+    if [[ "$ROTATION_ENABLED" == "true" && "$DAYS_SINCE_ROTATION" != "N/A" && "$DAYS_SINCE_ROTATION" -ge "$ROTATION_THRESHOLD_DAYS" ]]; then
+        echo "⚠️ Secret '$NAME' has not been rotated in $DAYS_SINCE_ROTATION days!" >> "$LOG_FILE"
+        # Optional: send email
+        if [[ -n "$EMAIL" ]]; then
+            echo "Secret '$NAME' has not been rotated in $DAYS_SINCE_ROTATION days!" | mail -s "AWS Secret Rotation Alert" "$EMAIL"
+        fi
+    fi
+done
+
+echo "Scan complete. Details logged in: $LOG_FILE"
